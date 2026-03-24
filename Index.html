@@ -434,12 +434,12 @@
             <div class="section-head">
               <div>
                 <div class="section-index">02 Template</div>
-                <h2>Load your Google Docs template</h2>
+                <h2>Load your Google Docs or Slides template</h2>
               </div>
             </div>
             <div class="field">
               <label class="label" for="template-url">Template URL</label>
-              <input id="template-url" type="url" placeholder="https://docs.google.com/document/d/..." />
+              <input id="template-url" type="url" placeholder="https://docs.google.com/document/d/... or https://docs.google.com/presentation/d/..." />
             </div>
             <p class="subtle" style="margin-top:8px;">For image placeholders, put the tag on its own line in the Google Doc for the cleanest result.</p>
             <div class="button-row" style="margin-top:10px;">
@@ -947,7 +947,7 @@
       async function inspectTemplate() {
         const templateUrl = document.getElementById("template-url").value.trim();
         if (!templateUrl) {
-          setBanner("Paste a Google Docs template URL first.", "error");
+          setBanner("Paste a Google Docs or Google Slides template URL first.", "error");
           return;
         }
 

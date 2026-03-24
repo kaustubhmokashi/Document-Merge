@@ -6,8 +6,13 @@ var EMAIL_DRAFT_SHEET_NAME = '_DocumentMergeDraft';
 var EMAIL_DRAFT_CHUNK_SIZE = 40000;
 
 function onOpen() {
-  SpreadsheetApp.getUi()
-    .createMenu('Document Merge')
+  var ui = getSpreadsheetUiOrNull_();
+
+  if (!ui) {
+    return;
+  }
+
+  ui.createMenu('Document Merge')
     .addItem('Open sidebar', 'showSidebar')
     .addSeparator()
     .addItem('Run for selected row', 'runForSelectedRowFromMenu')
@@ -27,9 +32,33 @@ function doGet() {
 }
 
 function showSidebar() {
+  var ui = getSpreadsheetUiOrNull_();
   var html = HtmlService.createHtmlOutputFromFile('Index')
     .setTitle('Document Merge');
-  SpreadsheetApp.getUi().showSidebar(html);
+
+  if (!ui) {
+    throw new Error('Open this from a spreadsheet-bound Apps Script project and launch it inside Google Sheets.');
+  }
+
+  ui.showSidebar(html);
+}
+
+function getSpreadsheetUiOrNull_() {
+  try {
+    return SpreadsheetApp.getUi();
+  } catch (error) {
+    return null;
+  }
+}
+
+function getRequiredSpreadsheetUi_() {
+  var ui = getSpreadsheetUiOrNull_();
+
+  if (!ui) {
+    throw new Error('This action must be run from inside Google Sheets, not from the Apps Script editor.');
+  }
+
+  return ui;
 }
 
 function getSidebarState() {
@@ -104,6 +133,7 @@ function getFolderPickerState(parentId) {
 
 function openEmailEditorDialog(payload) {
   var spreadsheet = SpreadsheetApp.getActive();
+  var ui = getRequiredSpreadsheetUi_();
   var draft = {
     spreadsheetId: spreadsheet.getId(),
     html: String(payload && payload.html || ''),
@@ -115,7 +145,7 @@ function openEmailEditorDialog(payload) {
   saveEmailDraft_(spreadsheet.getId(), draft);
   template.initialDraftJson = JSON.stringify(draft);
 
-  SpreadsheetApp.getUi().showModalDialog(
+  ui.showModalDialog(
     template.evaluate().setWidth(900).setHeight(720),
     'Email Editor'
   );
@@ -140,23 +170,27 @@ function getEmailEditorDraft() {
 }
 
 function runForActiveRowFromMenu() {
+  var ui = getRequiredSpreadsheetUi_();
   var result = runForActiveRow();
-  SpreadsheetApp.getUi().alert('Document Merge', 'PDF created for row ' + result.rowNumber + '.', SpreadsheetApp.getUi().ButtonSet.OK);
+  ui.alert('Document Merge', 'PDF created for row ' + result.rowNumber + '.', ui.ButtonSet.OK);
 }
 
 function runForSelectedRowFromMenu() {
+  var ui = getRequiredSpreadsheetUi_();
   var result = runForSelectedRow();
-  SpreadsheetApp.getUi().alert('Document Merge', 'PDF created for row ' + result.rowNumber + '.', SpreadsheetApp.getUi().ButtonSet.OK);
+  ui.alert('Document Merge', 'PDF created for row ' + result.rowNumber + '.', ui.ButtonSet.OK);
 }
 
 function runLatestRowFromMenu() {
+  var ui = getRequiredSpreadsheetUi_();
   var result = runLatestUnprocessedRow();
-  SpreadsheetApp.getUi().alert('Document Merge', 'PDF created for row ' + result.rowNumber + '.', SpreadsheetApp.getUi().ButtonSet.OK);
+  ui.alert('Document Merge', 'PDF created for row ' + result.rowNumber + '.', ui.ButtonSet.OK);
 }
 
 function runAllRowsFromMenu() {
+  var ui = getRequiredSpreadsheetUi_();
   var results = runAllRows();
-  SpreadsheetApp.getUi().alert('Document Merge', 'Processed ' + results.processedCount + ' row(s).', SpreadsheetApp.getUi().ButtonSet.OK);
+  ui.alert('Document Merge', 'Processed ' + results.processedCount + ' row(s).', ui.ButtonSet.OK);
 }
 
 function runForActiveRow() {
@@ -340,9 +374,6 @@ function generateAndSendForRow_(config, row, triggerType) {
   var folder = DriveApp.getFolderById(config.folderId);
   var tempName = buildFileName_(config, row, true);
   var pdfName = buildFileName_(config, row, false) + '.pdf';
-  var tempDocFile = templateFile.makeCopy(tempName, folder);
-  var tempDoc = DocumentApp.openById(tempDocFile.getId());
-  var body = tempDoc.getBody();
   var replacementContext = buildReplacementContext_(config, row);
   var emailTo = renderTemplateString_(config.email.to, replacementContext);
   var emailCc = renderTemplateString_(config.email.cc, replacementContext);
@@ -356,17 +387,8 @@ function generateAndSendForRow_(config, row, triggerType) {
   var pdfBlob;
   var pdfFile;
 
-  config.templateTags.forEach(function(tag) {
-    var mappedHeader = config.mappings[tag];
-    var replacement = mappedHeader ? String(row.values[mappedHeader] || '') : '';
-    replaceTagWithContent_(body, tag, replacement);
-  });
-
-  tempDoc.saveAndClose();
-
-  pdfBlob = tempDocFile.getAs(MimeType.PDF).setName(pdfName);
+  pdfBlob = generatePdfFromTemplate_(config, templateFile, folder, tempName, pdfName, row);
   pdfFile = folder.createFile(pdfBlob);
-  tempDocFile.setTrashed(true);
 
   if (!String(emailTo || '').trim()) {
     throw new Error('The email recipient resolved to an empty value for row ' + row.rowNumber + '.');
@@ -414,6 +436,57 @@ function generateAndSendForRow_(config, row, triggerType) {
   };
 }
 
+function generatePdfFromTemplate_(config, templateFile, folder, tempName, pdfName, row) {
+  if (config.templateType === 'SLIDES') {
+    return generatePdfFromSlidesTemplate_(config, templateFile, folder, tempName, pdfName, row);
+  }
+
+  return generatePdfFromDocTemplate_(config, templateFile, folder, tempName, pdfName, row);
+}
+
+function generatePdfFromDocTemplate_(config, templateFile, folder, tempName, pdfName, row) {
+  var tempDocFile = templateFile.makeCopy(tempName, folder);
+  var tempDoc = DocumentApp.openById(tempDocFile.getId());
+  var body = tempDoc.getBody();
+  var pdfBlob;
+
+  config.templateTags.forEach(function(tag) {
+    var mappedHeader = config.mappings[tag];
+    var replacement = mappedHeader ? String(row.values[mappedHeader] || '') : '';
+    replaceTagWithContent_(body, tag, replacement);
+  });
+
+  tempDoc.saveAndClose();
+  pdfBlob = tempDocFile.getAs(MimeType.PDF).setName(pdfName);
+  tempDocFile.setTrashed(true);
+  return pdfBlob;
+}
+
+function generatePdfFromSlidesTemplate_(config, templateFile, folder, tempName, pdfName, row) {
+  var tempPresentationFile = templateFile.makeCopy(tempName, folder);
+  var presentation = SlidesApp.openById(tempPresentationFile.getId());
+  var pdfBlob;
+
+  config.templateTags.forEach(function(tag) {
+    var mappedHeader = config.mappings[tag];
+    var replacement = mappedHeader ? String(row.values[mappedHeader] || '') : '';
+    var imageBlobs = extractImageBlobsFromValue_(replacement);
+
+    if (imageBlobs.length) {
+      replaceTagWithSlidesImages_(presentation, tag, imageBlobs);
+      replaceSlidesTextTag_(presentation, tag, '');
+      return;
+    }
+
+    replaceSlidesTextTag_(presentation, tag, replacement);
+  });
+
+  presentation.saveAndClose();
+  pdfBlob = tempPresentationFile.getAs(MimeType.PDF).setName(pdfName);
+  tempPresentationFile.setTrashed(true);
+  return pdfBlob;
+}
+
 function buildConfig_(payload, spreadsheet, sheetMeta, templateMeta, folderMeta) {
   return {
     spreadsheetId: spreadsheet.getId(),
@@ -422,7 +495,8 @@ function buildConfig_(payload, spreadsheet, sheetMeta, templateMeta, folderMeta)
     sheetName: sheetMeta.name,
     sheetHeaders: sheetMeta.headers,
     templateUrl: payload.templateUrl,
-    templateId: templateMeta.documentId,
+    templateId: templateMeta.templateId,
+    templateType: templateMeta.templateType,
     templateName: templateMeta.documentName,
     templateTags: templateMeta.tags,
     mappings: payload.mappings || {},
@@ -455,7 +529,7 @@ function validateConfig_(config, tags, headers) {
   var missingTags = [];
 
   if (!config.templateId) {
-    throw new Error('Connect a valid Google Docs template.');
+    throw new Error('Connect a valid Google Docs or Google Slides template.');
   }
 
   if (!config.folderId) {
@@ -620,17 +694,28 @@ function getSheetRows_(spreadsheet, sheetId) {
 }
 
 function getTemplateMetadata(templateUrl) {
-  var parsed = parseDocUrl_(templateUrl);
-  var document = DocumentApp.openById(parsed.documentId);
-  var tags = extractTemplateTags_(document.getBody().getText());
+  var parsed = parseTemplateUrl_(templateUrl);
+  var tags;
+  var name;
+
+  if (parsed.templateType === 'SLIDES') {
+    var presentation = SlidesApp.openById(parsed.templateId);
+    tags = extractTemplateTags_(getPresentationText_(presentation));
+    name = presentation.getName();
+  } else {
+    var document = DocumentApp.openById(parsed.templateId);
+    tags = extractTemplateTags_(document.getBody().getText());
+    name = document.getName();
+  }
 
   if (!tags.length) {
-    throw new Error('No {{tags}} were found in that Google Doc template.');
+    throw new Error('No {{tags}} were found in that template.');
   }
 
   return {
-    documentId: parsed.documentId,
-    documentName: document.getName(),
+    templateId: parsed.templateId,
+    templateType: parsed.templateType,
+    documentName: name,
     tags: tags,
   };
 }
@@ -666,7 +751,13 @@ function getFolderMetadataById_(folderId) {
 
 function getSavedConfig_(spreadsheetId) {
   var raw = PropertiesService.getUserProperties().getProperty(CONFIG_PREFIX + spreadsheetId);
-  return raw ? JSON.parse(raw) : null;
+  var config = raw ? JSON.parse(raw) : null;
+
+  if (!config) {
+    return null;
+  }
+
+  return hydrateSavedConfig_(config);
 }
 
 function getEmailDraft_(spreadsheetId) {
@@ -825,6 +916,70 @@ function getRequiredConfig_(spreadsheetId) {
   return config;
 }
 
+function hydrateSavedConfig_(config) {
+  var templateMeta;
+  var hydrated;
+
+  if (!config || !config.templateUrl) {
+    return config;
+  }
+
+  try {
+    templateMeta = getTemplateMetadata(config.templateUrl);
+  } catch (error) {
+    return config;
+  }
+
+  hydrated = {
+    spreadsheetId: config.spreadsheetId,
+    spreadsheetName: config.spreadsheetName,
+    sheetId: config.sheetId,
+    sheetName: config.sheetName,
+    sheetHeaders: config.sheetHeaders,
+    templateUrl: config.templateUrl,
+    templateId: templateMeta.templateId,
+    templateType: templateMeta.templateType,
+    templateName: templateMeta.documentName,
+    templateTags: templateMeta.tags,
+    mappings: reconcileMappings_(config.mappings || {}, templateMeta.tags),
+    trigger: config.trigger,
+    email: config.email,
+    folderUrl: config.folderUrl,
+    folderId: config.folderId,
+    folderName: config.folderName,
+    fileNamePattern: config.fileNamePattern,
+    updatedAt: config.updatedAt,
+  };
+
+  return hydrated;
+}
+
+function reconcileMappings_(savedMappings, latestTags) {
+  var reconciled = {};
+  var savedKeys = Object.keys(savedMappings || {});
+
+  latestTags.forEach(function(tag) {
+    var exactValue = savedMappings[tag];
+    var normalizedTag = normalizeHeader_(tag);
+    var fallbackKey;
+
+    if (exactValue) {
+      reconciled[tag] = exactValue;
+      return;
+    }
+
+    fallbackKey = savedKeys.filter(function(savedKey) {
+      return normalizeHeader_(savedKey) === normalizedTag;
+    })[0];
+
+    if (fallbackKey) {
+      reconciled[tag] = savedMappings[fallbackKey];
+    }
+  });
+
+  return reconciled;
+}
+
 function saveConfig_(spreadsheetId, config) {
   var userProps = PropertiesService.getUserProperties();
   var registry = getJsonProperty_(userProps, REGISTRY_KEY, []);
@@ -846,6 +1001,7 @@ function getDefaultConfig_(spreadsheet, sheetMeta) {
     sheetHeaders: sheetMeta.headers,
     templateUrl: '',
     templateId: '',
+    templateType: 'DOCS',
     templateName: '',
     templateTags: [],
     mappings: {},
@@ -906,6 +1062,68 @@ function replaceTagWithContent_(body, tag, replacement) {
   }
 
   replaceTagWithImages_(body, pattern, imageBlobs);
+}
+
+function replaceSlidesTextTag_(presentation, tag, replacement) {
+  getTagVariants_(tag).forEach(function(variant) {
+    presentation.replaceAllText(variant, String(replacement || ''));
+  });
+}
+
+function replaceTagWithSlidesImages_(presentation, tag, imageBlobs) {
+  presentation.getSlides().forEach(function(slide) {
+    slide.getPageElements().slice().forEach(function(element) {
+      var shape;
+      var text;
+      var left;
+      var top;
+      var width;
+      var height;
+
+      if (element.getPageElementType() !== SlidesApp.PageElementType.SHAPE) {
+        return;
+      }
+
+      shape = element.asShape();
+      text = shape.getText().asString();
+      if (!isFullTagMatch_(text, tag)) {
+        return;
+      }
+
+      left = element.getLeft();
+      top = element.getTop();
+      width = element.getWidth();
+      height = element.getHeight();
+
+      element.remove();
+      insertImagesOnSlide_(slide, imageBlobs, left, top, width, height);
+    });
+  });
+}
+
+function insertImagesOnSlide_(slide, imageBlobs, left, top, width, height) {
+  var gap = 8;
+  var totalGap = Math.max(0, imageBlobs.length - 1) * gap;
+  var boxWidth = Math.max(24, (width - totalGap) / Math.max(1, imageBlobs.length));
+
+  imageBlobs.forEach(function(blob, index) {
+    var boxLeft = left + (index * (boxWidth + gap));
+    var image = slide.insertImage(blob);
+    fitSlidesImageIntoBox_(image, boxLeft, top, boxWidth, height);
+  });
+}
+
+function fitSlidesImageIntoBox_(image, left, top, boxWidth, boxHeight) {
+  var width = image.getWidth();
+  var height = image.getHeight();
+  var ratio = Math.min(boxWidth / width, boxHeight / height);
+  var scaledWidth = Math.max(1, width * ratio);
+  var scaledHeight = Math.max(1, height * ratio);
+
+  image.setWidth(scaledWidth);
+  image.setHeight(scaledHeight);
+  image.setLeft(left + ((boxWidth - scaledWidth) / 2));
+  image.setTop(top + ((boxHeight - scaledHeight) / 2));
 }
 
 function replaceTagWithImages_(body, pattern, imageBlobs) {
@@ -1103,12 +1321,26 @@ function getOrCreateLogSheet_(spreadsheet) {
   return sheet;
 }
 
-function parseDocUrl_(templateUrl) {
-  var match = String(templateUrl || '').match(/\/document\/d\/([a-zA-Z0-9-_]+)/);
-  if (!match) {
-    throw new Error('Use a valid Google Docs template URL.');
+function parseTemplateUrl_(templateUrl) {
+  var value = String(templateUrl || '');
+  var docMatch = value.match(/\/document\/d\/([a-zA-Z0-9-_]+)/);
+  var slidesMatch = value.match(/\/presentation\/d\/([a-zA-Z0-9-_]+)/);
+
+  if (docMatch) {
+    return {
+      templateId: docMatch[1],
+      templateType: 'DOCS',
+    };
   }
-  return { documentId: match[1] };
+
+  if (slidesMatch) {
+    return {
+      templateId: slidesMatch[1],
+      templateType: 'SLIDES',
+    };
+  }
+
+  throw new Error('Use a valid Google Docs or Google Slides template URL.');
 }
 
 function parseFolderUrl_(folderUrl) {
@@ -1182,6 +1414,20 @@ function getSheetById_(spreadsheet, sheetId) {
   return matching;
 }
 
+function getPresentationText_(presentation) {
+  var parts = [];
+
+  presentation.getSlides().forEach(function(slide) {
+    slide.getPageElements().forEach(function(element) {
+      if (element.getPageElementType() === SlidesApp.PageElementType.SHAPE) {
+        parts.push(element.asShape().getText().asString());
+      }
+    });
+  });
+
+  return parts.join('\n');
+}
+
 function extractTemplateTags_(text) {
   var regex = /{{\s*([^{}]+?)\s*}}/g;
   var tags = [];
@@ -1198,6 +1444,21 @@ function extractTemplateTags_(text) {
   }
 
   return tags;
+}
+
+function getTagVariants_(tag) {
+  var cleanTag = sanitizeTagName_(tag);
+  return [
+    '{{' + cleanTag + '}}',
+    '{{ ' + cleanTag + '}}',
+    '{{' + cleanTag + ' }}',
+    '{{ ' + cleanTag + ' }}',
+  ];
+}
+
+function isFullTagMatch_(text, tag) {
+  var pattern = new RegExp('^\\s*\\{\\{\\s*' + escapeForRegex_(sanitizeTagName_(tag)) + '\\s*\\}\\}\\s*$');
+  return pattern.test(String(text || ''));
 }
 
 function suggestMappings(tags, headers) {
@@ -1327,8 +1588,6 @@ function sanitizeTagName_(value) {
     .replace(/[\u200B-\u200D\uFEFF]/g, '')
     .replace(/[“”]/g, '"')
     .replace(/[‘’]/g, "'")
-    .replace(/^[^a-zA-Z0-9_]+/, '')
-    .replace(/[^a-zA-Z0-9_. -]+$/, '')
     .trim()
     .replace(/\s+/g, ' ');
 }
